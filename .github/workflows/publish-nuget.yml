@@ -1,0 +1,100 @@
+name: Publish NuGet package
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+
+permissions:
+  contents: write
+  packages: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "10.0.x"
+
+      - name: Determine package version
+        shell: bash
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "Tag non valido: $GITHUB_REF_NAME"
+            exit 1
+          fi
+          echo "PACKAGE_VERSION=$VERSION" >> "$GITHUB_ENV"
+
+      - name: Restore
+        run: >
+          dotnet restore FDR11.Logger.slnx
+          --source https://api.nuget.org/v3/index.json
+
+      - name: Build
+        run: >
+          dotnet build FDR11.Logger.slnx
+          --configuration Release
+          --no-restore
+
+      - name: Test
+        run: >
+          dotnet test FDR11.Logger.slnx
+          --configuration Release
+          --no-build
+          --no-restore
+
+      - name: Pack nupkg and snupkg
+        run: >
+          dotnet pack Code/FDR11.Logger.csproj
+          --configuration Release
+          --no-build
+          --output artifacts
+          -p:PackageVersion=${{ env.PACKAGE_VERSION }}
+          -p:RepositoryUrl=${{ github.server_url }}/${{ github.repository }}
+          -p:RepositoryCommit=${{ github.sha }}
+          -p:CI=true
+
+      - name: Upload workflow artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: FDR11.Logger-${{ env.PACKAGE_VERSION }}
+          path: |
+            artifacts/*.nupkg
+            artifacts/*.snupkg
+          if-no-files-found: error
+
+      - name: Publish to GitHub Packages
+        env:
+          NUGET_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: >
+          dotnet nuget push
+          "artifacts/FDR11.Logger.${{ env.PACKAGE_VERSION }}.nupkg"
+          --source "https://nuget.pkg.github.com/${{ github.repository_owner }}/index.json"
+          --api-key "$NUGET_AUTH_TOKEN"
+          --no-symbols
+          --skip-duplicate
+
+      - name: Create or update GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: |
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            gh release upload "$GITHUB_REF_NAME" \
+              artifacts/*.nupkg artifacts/*.snupkg --clobber
+          else
+            gh release create "$GITHUB_REF_NAME" \
+              artifacts/*.nupkg artifacts/*.snupkg \
+              --verify-tag \
+              --generate-notes \
+              --title "FDR11.Logger $PACKAGE_VERSION"
+          fi

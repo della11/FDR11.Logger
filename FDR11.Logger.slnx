@@ -1,3 +1,5 @@
 <Solution>
   <Project Path="Code/FDR11.Logger.csproj" />
+  <Project Path="Code/samples/FDR11.Logger.Sample/FDR11.Logger.Sample.csproj" />
+  <Project Path="Tests/FDR11.Logger.Tests.csproj" />
 </Solution>
