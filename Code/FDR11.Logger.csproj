@@ -7,7 +7,7 @@
     <LangVersion>latest</LangVersion>
 
     <PackageId>FDR11.Logger</PackageId>
-    <Version>1.0.0</Version>
+    <Version>1.0.1</Version>
     <Authors>FDR11</Authors>
     <Company>FDR11</Company>
     <Description>Configurazione Serilog standard per applicazioni .NET 10 e ASP.NET Core, con log JSON strutturati, correlation ID e request logging.</Description>
@@ -40,7 +40,7 @@
   </ItemGroup>
 
   <ItemGroup>
-    <None Include="README.md" Pack="true" PackagePath="\" />
+    <None Include="..\README.md" Pack="true" PackagePath="\" Link="README.md" />
     <None Include="LICENSE.txt" Pack="true" PackagePath="\" />
     <None Include="assets\fdr11-logger-icon.png" Pack="true" PackagePath="\" />
   </ItemGroup>

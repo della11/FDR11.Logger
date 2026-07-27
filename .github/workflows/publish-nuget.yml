@@ -7,6 +7,7 @@ on:
 
 permissions:
   contents: write
+  id-token: write
   packages: write
 
 jobs:
@@ -27,12 +28,15 @@ jobs:
       - name: Determine package version
         shell: bash
         run: |
-          VERSION="${GITHUB_REF_NAME#v}"
+          TAG="$GITHUB_REF_NAME"
+          VERSION="${TAG#v}"
           if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-            echo "Tag non valido: $GITHUB_REF_NAME"
+            echo "Tag non valido: $TAG"
             exit 1
           fi
           echo "PACKAGE_VERSION=$VERSION" >> "$GITHUB_ENV"
+          echo "RELEASE_TAG=$TAG" >> "$GITHUB_ENV"
+          echo "SOURCE_COMMIT=$(git rev-parse HEAD)" >> "$GITHUB_ENV"
 
       - name: Restore
         run: >
@@ -60,7 +64,7 @@ jobs:
           --output artifacts
           -p:PackageVersion=${{ env.PACKAGE_VERSION }}
           -p:RepositoryUrl=${{ github.server_url }}/${{ github.repository }}
-          -p:RepositoryCommit=${{ github.sha }}
+          -p:RepositoryCommit=${{ env.SOURCE_COMMIT }}
           -p:CI=true
 
       - name: Upload workflow artifacts
@@ -83,16 +87,43 @@ jobs:
           --no-symbols
           --skip-duplicate
 
+      - name: Authenticate to NuGet.org
+        id: nuget-login
+        uses: NuGet/login@v1
+        with:
+          user: ${{ secrets.NUGET_USER }}
+
+      - name: Publish package to NuGet.org
+        env:
+          NUGET_API_KEY: ${{ steps.nuget-login.outputs.NUGET_API_KEY }}
+        run: >
+          dotnet nuget push
+          "artifacts/FDR11.Logger.${{ env.PACKAGE_VERSION }}.nupkg"
+          --source "https://api.nuget.org/v3/index.json"
+          --api-key "$NUGET_API_KEY"
+          --no-symbols
+          --skip-duplicate
+
+      - name: Publish symbols to NuGet.org
+        env:
+          NUGET_API_KEY: ${{ steps.nuget-login.outputs.NUGET_API_KEY }}
+        run: >
+          dotnet nuget push
+          "artifacts/FDR11.Logger.${{ env.PACKAGE_VERSION }}.snupkg"
+          --source "https://api.nuget.org/v3/index.json"
+          --api-key "$NUGET_API_KEY"
+          --skip-duplicate
+
       - name: Create or update GitHub Release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         shell: bash
         run: |
-          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
-            gh release upload "$GITHUB_REF_NAME" \
+          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            gh release upload "$RELEASE_TAG" \
               artifacts/*.nupkg artifacts/*.snupkg --clobber
           else
-            gh release create "$GITHUB_REF_NAME" \
+            gh release create "$RELEASE_TAG" \
               artifacts/*.nupkg artifacts/*.snupkg \
               --verify-tag \
               --generate-notes \
