@@ -29,13 +29,7 @@ il logging delle richieste HTTP.
 Da NuGet.org:
 
 ```powershell
-dotnet add package FDR11.Logger --version 1.0.1
-```
-
-Oppure aggiungere direttamente il riferimento al progetto:
-
-```xml
-<PackageReference Include="FDR11.Logger" Version="1.0.1" />
+dotnet add package FDR11.Logger
 ```
 
 Le dipendenze Serilog necessarie vengono installate automaticamente dal

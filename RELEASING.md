@@ -12,41 +12,46 @@ dotnet pack Code/FDR11.Logger.csproj `
   --output artifacts
 ```
 
-Il pack genera:
+## Configurazione GitHub una tantum
 
-- `FDR11.Logger.<versione>.nupkg`;
-- `FDR11.Logger.<versione>.snupkg`.
+1. Aprire **Settings > Environments**.
+2. Creare l'environment `nuget-release`.
+3. Abilitare **Required reviewers** e scegliere gli approvatori.
+4. Facoltativo: abilitare **Prevent self-review**.
+5. In **Settings > Secrets and variables > Actions**, creare il repository
+   secret `NUGET_USER` con il nome utente NuGet.org, non l'email.
+
+Il job `prepare` esegue build, test e pack. Il job `publish` attende
+l'approvazione dell'environment prima di accedere ai feed.
 
 ## Configurazione NuGet.org una tantum
 
-1. Accedere a NuGet.org e aprire **Trusted Publishing** dal menu dell'account.
-2. Creare una policy con:
-   - repository owner: `della11`;
-   - repository: `FDR11.Logger`;
-   - workflow file: `publish-nuget.yml`;
-   - environment: vuoto.
-3. Nel repository GitHub aprire **Settings > Secrets and variables > Actions**
-   e creare il repository secret `NUGET_USER`, contenente il nome utente
-   NuGet.org e non l'indirizzo email.
+In NuGet.org aprire **Trusted Publishing** e configurare:
+
+- repository owner: `della11`;
+- repository: `FDR11.Logger`;
+- workflow file: `publish-nuget.yml`;
+- environment: `nuget-release`.
+
+L'environment deve coincidere con quello dichiarato nel workflow, altrimenti
+l'autenticazione OIDC fallisce.
 
 ## Pubblicazione
 
-Il pacchetto `1.0.0` pubblicato su GitHub Packages non contiene il README della
-root. La prima versione pubblicata anche su NuGet.org deve quindi essere
-`1.0.1`.
+1. Aprire **Actions > Publish NuGet package > Run workflow**.
+2. Selezionare il branch `main`.
+3. Attivare **Pubblicare una prerelease preview.N?** solo per una prerelease.
+4. Avviare il workflow.
+5. Dopo build e test, aprire il run e approvare `nuget-release`.
 
-Dopo aver eseguito commit e push delle modifiche, creare e pubblicare il nuovo
-tag SemVer:
+Il workflow calcola la versione dai tag esistenti:
 
-```powershell
-git tag v1.0.1
-git push origin v1.0.1
-```
+- stable: `v1.0.1` diventa `v1.0.2`;
+- prima prerelease: `v1.0.1` diventa `v1.0.2-preview.1`;
+- prerelease successiva: `v1.0.2-preview.1` diventa
+  `v1.0.2-preview.2`;
+- stable dopo le preview: diventa `v1.0.2`.
 
-Il workflow:
-
-1. esegue restore, build e test;
-2. genera `.nupkg` e `.snupkg`;
-3. pubblica entrambi su NuGet.org;
-4. pubblica il pacchetto principale su GitHub Packages;
-5. crea o aggiorna la GitHub Release.
+Dopo l'approvazione pubblica `.nupkg` e `.snupkg`, quindi crea automaticamente
+tag e GitHub Release. La concorrenza è serializzata per evitare versioni
+duplicate.

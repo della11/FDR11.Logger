@@ -1,9 +1,20 @@
 name: Publish NuGet package
 
+run-name: >-
+  NuGet ${{ inputs.prerelease && 'prerelease' || 'stable' }} requested by @${{ github.actor }}
+
 on:
-  push:
-    tags:
-      - "v*.*.*"
+  workflow_dispatch:
+    inputs:
+      prerelease:
+        description: "Pubblicare una prerelease preview.N?"
+        required: true
+        type: boolean
+        default: false
+
+concurrency:
+  group: nuget-release
+  cancel-in-progress: false
 
 permissions:
   contents: write
@@ -11,32 +22,87 @@ permissions:
   packages: write
 
 jobs:
-  publish:
+  prepare:
+    name: Build, test and pack
     runs-on: ubuntu-latest
+    outputs:
+      package-version: ${{ steps.version.outputs.package-version }}
+      release-tag: ${{ steps.version.outputs.release-tag }}
+      source-commit: ${{ steps.version.outputs.source-commit }}
+      prerelease: ${{ steps.version.outputs.prerelease }}
 
     steps:
+      - name: Require main branch
+        if: github.ref != 'refs/heads/main'
+        run: |
+          echo "Avviare il rilascio dal branch main. Branch selezionato: $GITHUB_REF_NAME"
+          exit 1
+
       - name: Checkout
         uses: actions/checkout@v6
         with:
           fetch-depth: 0
 
+      - name: Determine next version
+        id: version
+        shell: bash
+        env:
+          IS_PRERELEASE: ${{ inputs.prerelease }}
+        run: |
+          LATEST_STABLE="$(
+            git tag --list |
+              { grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' || true; } |
+              sort -V |
+              tail -n 1
+          )"
+
+          if [[ -z "$LATEST_STABLE" ]]; then
+            echo "Nessun tag stabile vMAJOR.MINOR.PATCH trovato."
+            exit 1
+          fi
+
+          IFS='.' read -r MAJOR MINOR PATCH <<< "${LATEST_STABLE#v}"
+          NEXT_STABLE="${MAJOR}.${MINOR}.$((10#$PATCH + 1))"
+
+          if [[ "$IS_PRERELEASE" == "true" ]]; then
+            LAST_PREVIEW=0
+            while IFS= read -r TAG; do
+              NUMBER="${TAG##*.}"
+              if [[ "$NUMBER" =~ ^[0-9]+$ ]] && (( NUMBER > LAST_PREVIEW )); then
+                LAST_PREVIEW="$NUMBER"
+              fi
+            done < <(git tag --list "v${NEXT_STABLE}-preview.*")
+
+            VERSION="${NEXT_STABLE}-preview.$((LAST_PREVIEW + 1))"
+          else
+            VERSION="$NEXT_STABLE"
+          fi
+
+          if [[ "$IS_PRERELEASE" == "true" ]]; then
+            [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+-preview\.[0-9]+$ ]]
+          else
+            [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          fi
+
+          RELEASE_TAG="v${VERSION}"
+          if git rev-parse "$RELEASE_TAG" >/dev/null 2>&1; then
+            echo "Il tag $RELEASE_TAG esiste già."
+            exit 1
+          fi
+
+          SOURCE_COMMIT="$(git rev-parse HEAD)"
+          echo "Versione calcolata: $VERSION"
+          echo "package-version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "release-tag=$RELEASE_TAG" >> "$GITHUB_OUTPUT"
+          echo "source-commit=$SOURCE_COMMIT" >> "$GITHUB_OUTPUT"
+          echo "prerelease=$IS_PRERELEASE" >> "$GITHUB_OUTPUT"
+          echo "PACKAGE_VERSION=$VERSION" >> "$GITHUB_ENV"
+          echo "SOURCE_COMMIT=$SOURCE_COMMIT" >> "$GITHUB_ENV"
+
       - name: Setup .NET
         uses: actions/setup-dotnet@v4
         with:
           dotnet-version: "10.0.x"
-
-      - name: Determine package version
-        shell: bash
-        run: |
-          TAG="$GITHUB_REF_NAME"
-          VERSION="${TAG#v}"
-          if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-            echo "Tag non valido: $TAG"
-            exit 1
-          fi
-          echo "PACKAGE_VERSION=$VERSION" >> "$GITHUB_ENV"
-          echo "RELEASE_TAG=$TAG" >> "$GITHUB_ENV"
-          echo "SOURCE_COMMIT=$(git rev-parse HEAD)" >> "$GITHUB_ENV"
 
       - name: Restore
         run: >
@@ -76,6 +142,30 @@ jobs:
             artifacts/*.snupkg
           if-no-files-found: error
 
+  publish:
+    name: Approve and publish
+    needs: prepare
+    runs-on: ubuntu-latest
+    environment:
+      name: nuget-release
+    env:
+      PACKAGE_VERSION: ${{ needs.prepare.outputs.package-version }}
+      RELEASE_TAG: ${{ needs.prepare.outputs.release-tag }}
+      SOURCE_COMMIT: ${{ needs.prepare.outputs.source-commit }}
+      IS_PRERELEASE: ${{ needs.prepare.outputs.prerelease }}
+
+    steps:
+      - name: Download workflow artifacts
+        uses: actions/download-artifact@v5
+        with:
+          name: FDR11.Logger-${{ env.PACKAGE_VERSION }}
+          path: artifacts
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "10.0.x"
+
       - name: Publish to GitHub Packages
         env:
           NUGET_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -114,18 +204,28 @@ jobs:
           --api-key "$NUGET_API_KEY"
           --skip-duplicate
 
-      - name: Create or update GitHub Release
+      - name: Create GitHub tag and release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
         shell: bash
         run: |
           if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
             gh release upload "$RELEASE_TAG" \
               artifacts/*.nupkg artifacts/*.snupkg --clobber
-          else
-            gh release create "$RELEASE_TAG" \
-              artifacts/*.nupkg artifacts/*.snupkg \
-              --verify-tag \
-              --generate-notes \
-              --title "FDR11.Logger $PACKAGE_VERSION"
+            exit 0
           fi
+
+          ARGS=(
+            --target "$SOURCE_COMMIT"
+            --generate-notes
+            --title "FDR11.Logger $PACKAGE_VERSION"
+          )
+
+          if [[ "$IS_PRERELEASE" == "true" ]]; then
+            ARGS+=(--prerelease)
+          fi
+
+          gh release create "$RELEASE_TAG" \
+            artifacts/*.nupkg artifacts/*.snupkg \
+            "${ARGS[@]}"
